@@ -1,0 +1,5 @@
+.env
+assets/uploads/*
+!assets/uploads/.gitkeep
+*.sql
+node_modules/
