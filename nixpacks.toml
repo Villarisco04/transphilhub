@@ -1,0 +1,11 @@
+[phases.setup]
+nixPkgs = ["php83", "php83-extensions-pdo_pgsql", "php83-extensions-pgsql", "php83-extensions-pdo_mysql", "php83-extensions-mysqli", "php83-extensions-gd"]
+
+[phases.install]
+cmds = ["composer install --no-dev --optimize-autoloader || true"]
+
+[phases.build]
+cmds = ["cp .env.example .env || true"]
+
+[start]
+cmd = "php -S 0.0.0.0:$PORT -t ."

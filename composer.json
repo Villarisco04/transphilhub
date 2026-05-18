@@ -1,0 +1,8 @@
+{
+    "name": "transphil/house-hub",
+    "description": "Trans-Phil House Hub Real Estate Platform",
+    "type": "project",
+    "require": {
+        "php": ">=8.0"
+    }
+}
