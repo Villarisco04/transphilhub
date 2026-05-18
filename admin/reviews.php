@@ -1,5 +1,6 @@
 <?php
 require_once '../includes/db.php';
+require_once '../includes/notifications.php';
 session_start();
 
 if(!isset($_SESSION['user_id']) || $_SESSION['role'] !== 'admin'){
@@ -7,12 +8,24 @@ if(!isset($_SESSION['user_id']) || $_SESSION['role'] !== 'admin'){
     exit;
 }
 
-// Handle approve/reject review
+// Handle approve review
 if(isset($_POST['approve_review'])){
     $review_id = (int)$_POST['review_id'];
     
-    $stmt = $pdo->prepare("UPDATE reviews SET is_approved = 1 WHERE id = ?");
+    $stmt = $pdo->prepare("UPDATE reviews SET is_approved = 1, approved_at = NOW() WHERE id = ?");
     $stmt->execute([$review_id]);
+    
+    // Get review details for notification
+    $stmt = $pdo->prepare("
+        SELECT r.*, c.full_name as client_name, c.email as client_email,
+               a.full_name as agent_name, a.id as agent_id
+        FROM reviews r
+        JOIN users c ON r.client_id = c.id
+        JOIN users a ON r.agent_id = a.id
+        WHERE r.id = ?
+    ");
+    $stmt->execute([$review_id]);
+    $review = $stmt->fetch();
     
     // Update agent's average rating
     $stmt = $pdo->prepare("
@@ -23,21 +36,57 @@ if(isset($_POST['approve_review'])){
         total_reviews = (
             SELECT COUNT(*) FROM reviews WHERE agent_id = u.id AND is_approved = 1
         )
-        WHERE u.id = (SELECT agent_id FROM reviews WHERE id = ?)
+        WHERE u.id = ?
     ");
-    $stmt->execute([$review_id]);
+    $stmt->execute([$review['agent_id']]);
+    
+    // Send notification to client
+    add_notification($review['client_id'], "Your review for agent {$review['agent_name']} has been approved and published!", "client/dashboard.php?reviews=1");
     
     $success = "Review approved successfully!";
 }
 
+// Handle reject review
 if(isset($_POST['reject_review'])){
     $review_id = (int)$_POST['review_id'];
+    
+    // Get client ID for notification
+    $stmt = $pdo->prepare("SELECT client_id FROM reviews WHERE id = ?");
+    $stmt->execute([$review_id]);
+    $client_id = $stmt->fetchColumn();
+    
     $stmt = $pdo->prepare("DELETE FROM reviews WHERE id = ?");
     $stmt->execute([$review_id]);
+    
+    // Notify client
+    add_notification($client_id, "Your review was not approved. Please check our guidelines and try again.", "client/submit_review.php");
+    
     $success = "Review rejected and removed.";
 }
 
-// Get reviews
+// Handle feature review (for homepage)
+if(isset($_POST['feature_review'])){
+    $review_id = (int)$_POST['review_id'];
+    
+    // First, remove featured status from all reviews
+    $pdo->prepare("UPDATE reviews SET is_featured = 0 WHERE is_featured = 1")->execute();
+    
+    // Then feature the selected review
+    $stmt = $pdo->prepare("UPDATE reviews SET is_featured = 1 WHERE id = ?");
+    $stmt->execute([$review_id]);
+    
+    $success = "Review featured on homepage successfully!";
+}
+
+// Handle remove featured
+if(isset($_POST['remove_featured'])){
+    $stmt = $pdo->prepare("UPDATE reviews SET is_featured = 0 WHERE is_featured = 1");
+    $stmt->execute();
+    
+    $success = "Featured review removed from homepage.";
+}
+
+// Get reviews with additional info
 $reviews = $pdo->query("
     SELECT r.*, 
            c.full_name as client_name, c.email as client_email,
@@ -47,12 +96,20 @@ $reviews = $pdo->query("
     JOIN users c ON r.client_id = c.id
     JOIN users a ON r.agent_id = a.id
     LEFT JOIN properties p ON r.property_id = p.id
-    ORDER BY r.created_at DESC
+    ORDER BY 
+        CASE WHEN r.is_featured = 1 THEN 0 ELSE 1 END,
+        r.is_approved DESC,
+        r.created_at DESC
 ")->fetchAll();
 
 $pending_count = $pdo->query("SELECT COUNT(*) FROM reviews WHERE is_approved = 0")->fetchColumn();
 $approved_count = $pdo->query("SELECT COUNT(*) FROM reviews WHERE is_approved = 1")->fetchColumn();
 $avg_rating = $pdo->query("SELECT AVG(rating) FROM reviews WHERE is_approved = 1")->fetchColumn();
+$featured_review = $pdo->query("SELECT r.id, r.comment, r.rating, c.full_name as client_name 
+                                FROM reviews r 
+                                JOIN users c ON r.client_id = c.id 
+                                WHERE r.is_featured = 1 
+                                LIMIT 1")->fetch();
 
 $current_page = basename($_SERVER['PHP_SELF']);
 ?>
@@ -123,7 +180,8 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);dis
 .user-chip span{font-size:13px;font-weight:600;color:var(--navy);}
 .content{padding:28px;}
 
-.stats-row{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;margin-bottom:24px;}
+/* Stats Row */
+.stats-row{display:grid;grid-template-columns:repeat(4,1fr);gap:18px;margin-bottom:24px;}
 .stat-card{background:var(--card);border-radius:var(--radius);padding:20px;display:flex;align-items:center;gap:16px;box-shadow:var(--shadow);border:1px solid var(--border);}
 .stat-icon{width:48px;height:48px;border-radius:12px;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
 .stat-icon i{font-size:22px;}
@@ -135,10 +193,34 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);dis
 .card-head h2{font-size:15px;font-weight:700;color:var(--navy);}
 .card-head h2 i{margin-right:8px;color:var(--orange);}
 
+/* Featured Alert */
+.featured-alert{
+    background: linear-gradient(135deg, #fef9e0, #fef3c7);
+    border-left: 4px solid #fbbf24;
+    padding: 15px 20px;
+    border-radius: 12px;
+    margin-bottom: 20px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+.featured-alert-content{
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+.featured-alert i{font-size: 24px; color: #fbbf24;}
+.featured-alert strong{color: #92400e;}
+
+/* Table */
 .tbl-wrap{overflow-x:auto;}
-.tbl{width:100%;border-collapse:collapse;min-width:800px;}
+.tbl{width:100%;border-collapse:collapse;min-width:900px;}
 .tbl th{padding:12px;font-size:11px;text-transform:uppercase;letter-spacing:.8px;color:var(--muted);background:#f8f7fc;border-bottom:1px solid var(--border);text-align:left;}
 .tbl td{padding:12px;font-size:13px;border-bottom:1px solid var(--border);vertical-align:middle;}
+.tbl tr.featured-row{background: #fef9e0;}
+.tbl tr.featured-row td{border-bottom-color: #fde68a;}
 
 .stars{display:inline-flex;gap:2px;}
 .stars i{font-size:12px;color:#fbbf24;}
@@ -147,18 +229,24 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);dis
 .badge{padding:4px 10px;border-radius:20px;font-size:11px;font-weight:600;display:inline-block;}
 .badge-pending{background:#fef3c7;color:#92400e;}
 .badge-approved{background:#d1fae5;color:#065f46;}
+.badge-featured{background:#fef9e0;color:#a16207;}
 
-.btn-sm{padding:6px 12px;border-radius:6px;border:none;cursor:pointer;font-size:11px;font-weight:600;margin:0 3px;}
+.btn-sm{padding:6px 12px;border-radius:6px;border:none;cursor:pointer;font-size:11px;font-weight:600;margin:0 3px;transition:.2s;}
 .btn-approve{background:#d1fae5;color:#065f46;}
+.btn-approve:hover{background:#a7f3d0;}
 .btn-reject{background:#fee2e2;color:#991b1b;}
+.btn-reject:hover{background:#fecaca;}
+.btn-feature{background:#fef9e0;color:#92400e;}
+.btn-feature:hover{background:#fde68a;}
+.btn-featured{background:#fbbf24;color:#78350f;cursor:default;}
 
-.alert{padding:12px 16px;border-radius:8px;margin-bottom:20px;font-size:13px;}
+.alert{padding:12px 16px;border-radius:8px;margin-bottom:20px;}
 .alert-success{background:#e6f7e6;color:var(--green2);border-left:4px solid var(--green);}
 
 @media(max-width:900px){
     .sidebar{display:none;}
     .main{margin-left:0;}
-    .stats-row{grid-template-columns:1fr;}
+    .stats-row{grid-template-columns:repeat(2,1fr);}
 }
 </style>
 </head>
@@ -200,6 +288,7 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);dis
             <div class="alert alert-success"><i class="fas fa-check-circle"></i> <?php echo $success; ?></div>
         <?php endif; ?>
 
+        <!-- Stats Cards -->
         <div class="stats-row">
             <div class="stat-card">
                 <div class="stat-icon" style="background:#fef9e0;"><i class="fas fa-clock" style="color:#92400e;"></i></div>
@@ -213,8 +302,31 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);dis
                 <div class="stat-icon" style="background:#fef9e0;"><i class="fas fa-star" style="color:#fbbf24;"></i></div>
                 <div><div class="stat-num"><?php echo number_format($avg_rating, 1); ?></div><div class="stat-label">Average Rating</div></div>
             </div>
+            <div class="stat-card">
+                <div class="stat-icon" style="background:#fef9e0;"><i class="fas fa-star" style="color:#fbbf24;"></i></div>
+                <div><div class="stat-num"><?php echo $featured_review ? 1 : 0; ?></div><div class="stat-label">Featured on Homepage</div></div>
+            </div>
         </div>
 
+        <!-- Featured Review Alert -->
+        <?php if($featured_review): ?>
+        <div class="featured-alert">
+            <div class="featured-alert-content">
+                <i class="fas fa-star"></i>
+                <div>
+                    <strong>Featured Review on Homepage</strong>
+                    <p style="font-size:12px; margin-top:2px;">"<?php echo htmlspecialchars(substr($featured_review['comment'], 0, 80)); ?>..." - <?php echo htmlspecialchars($featured_review['client_name']); ?> (<?php echo $featured_review['rating']; ?>★)</p>
+                </div>
+            </div>
+            <form method="POST">
+                <button type="submit" name="remove_featured" class="btn-sm btn-reject" onclick="return confirm('Remove this review from homepage?')">
+                    <i class="fas fa-times"></i> Remove from Homepage
+                </button>
+            </form>
+        </div>
+        <?php endif; ?>
+
+        <!-- Reviews Table -->
         <div class="card">
             <div class="card-head">
                 <h2><i class="fas fa-star"></i> All Client Reviews</h2>
@@ -235,49 +347,66 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);dis
                     </thead>
                     <tbody>
                         <?php foreach($reviews as $review): ?>
-                        <tr>
-                            <td>
-                                <div><strong><?php echo htmlspecialchars($review['client_name']); ?></strong></div>
-                                <div style="font-size:11px;color:var(--muted);"><?php echo htmlspecialchars($review['client_email']); ?></div>
-                            </td>
-                            <td><?php echo htmlspecialchars($review['agent_name']); ?></td>
-                            <td>
-                                <div class="stars">
-                                    <?php for($i = 1; $i <= 5; $i++): ?>
-                                        <i class="fas fa-star <?php echo $i <= $review['rating'] ? '' : 'empty'; ?>"></i>
-                                    <?php endfor; ?>
-                                </div>
-                            </td>
-                            <td style="max-width:250px;"><?php echo nl2br(htmlspecialchars(substr($review['comment'], 0, 100))); ?>...</td>
-                            <td><?php echo htmlspecialchars($review['property_title'] ?? '—'); ?></td>
-                            <td style="font-size:11px;"><?php echo date('M d, Y', strtotime($review['created_at'])); ?></td>
-                            <td>
-                                <span class="badge badge-<?php echo $review['is_approved'] ? 'approved' : 'pending'; ?>">
-                                    <?php echo $review['is_approved'] ? 'Approved' : 'Pending'; ?>
-                                </span>
-                            </td>
-                            <td>
-                                <?php if(!$review['is_approved']): ?>
-                                    <form method="POST" style="display:inline-block;">
-                                        <input type="hidden" name="review_id" value="<?php echo $review['id']; ?>">
-                                        <button type="submit" name="approve_review" class="btn-sm btn-approve" onclick="return confirm('Approve this review?')">
-                                            <i class="fas fa-check"></i> Approve
-                                        </button>
-                                    </form>
-                                    <form method="POST" style="display:inline-block;">
-                                        <input type="hidden" name="review_id" value="<?php echo $review['id']; ?>">
-                                        <button type="submit" name="reject_review" class="btn-sm btn-reject" onclick="return confirm('Reject and delete this review?')">
-                                            <i class="fas fa-times"></i> Reject
-                                        </button>
-                                    </form>
-                                <?php else: ?>
-                                    <span style="color:var(--muted);font-size:11px;">Approved</span>
-                                <?php endif; ?>
-                            </td>
-                        </tr>
+                            <tr class="<?php echo ($review['is_featured'] ?? 0) ? 'featured-row' : ''; ?>">
+                                <td>
+                                    <div><strong><?php echo htmlspecialchars($review['client_name']); ?></strong></div>
+                                    <div style="font-size:11px;color:var(--muted);"><?php echo htmlspecialchars($review['client_email']); ?></div>
+                                </td>
+                                <td><?php echo htmlspecialchars($review['agent_name']); ?></td>
+                                <td>
+                                    <div class="stars">
+                                        <?php for($i = 1; $i <= 5; $i++): ?>
+                                            <i class="fas fa-star <?php echo $i <= $review['rating'] ? '' : 'empty'; ?>"></i>
+                                        <?php endfor; ?>
+                                    </div>
+                                </td>
+                                <td style="max-width:250px;"><?php echo nl2br(htmlspecialchars(substr($review['comment'], 0, 100))); ?>...</td>
+                                <td><?php echo htmlspecialchars($review['property_title'] ?? '—'); ?></td>
+                                <td style="font-size:11px;"><?php echo date('M d, Y', strtotime($review['created_at'])); ?></td>
+                                <td>
+                                    <?php if($review['is_featured'] ?? 0): ?>
+                                        <span class="badge badge-featured"><i class="fas fa-star"></i> Featured</span>
+                                    <?php else: ?>
+                                        <span class="badge badge-<?php echo $review['is_approved'] ? 'approved' : 'pending'; ?>">
+                                            <?php echo $review['is_approved'] ? 'Approved' : 'Pending'; ?>
+                                        </span>
+                                    <?php endif; ?>
+                                </td>
+                                <td style="white-space:nowrap;">
+                                    <?php if(!$review['is_approved'] && !($review['is_featured'] ?? 0)): ?>
+                                        <form method="POST" style="display:inline-block;">
+                                            <input type="hidden" name="review_id" value="<?php echo $review['id']; ?>">
+                                            <button type="submit" name="approve_review" class="btn-sm btn-approve" onclick="return confirm('Approve this review?')">
+                                                <i class="fas fa-check"></i> Approve
+                                            </button>
+                                        </form>
+                                        <form method="POST" style="display:inline-block;">
+                                            <input type="hidden" name="review_id" value="<?php echo $review['id']; ?>">
+                                            <button type="submit" name="reject_review" class="btn-sm btn-reject" onclick="return confirm('Reject and delete this review?')">
+                                                <i class="fas fa-times"></i> Reject
+                                            </button>
+                                        </form>
+                                    <?php endif; ?>
+                                    
+                                    <?php if($review['is_approved'] && !($review['is_featured'] ?? 0)): ?>
+                                        <form method="POST" style="display:inline-block;">
+                                            <input type="hidden" name="review_id" value="<?php echo $review['id']; ?>">
+                                            <button type="submit" name="feature_review" class="btn-sm btn-feature" onclick="return confirm('Feature this review on the homepage?')">
+                                                <i class="fas fa-star"></i> Feature on Homepage
+                                            </button>
+                                        </form>
+                                    <?php endif; ?>
+                                    
+                                    <?php if($review['is_featured'] ?? 0): ?>
+                                        <span class="btn-sm btn-featured">
+                                            <i class="fas fa-star"></i> Currently Featured
+                                        </span>
+                                    <?php endif; ?>
+                                </td>
+                            </tr>
                         <?php endforeach; ?>
                         <?php if(empty($reviews)): ?>
-                            <tr><td colspan="8" style="text-align:center;padding:40px;">No reviews yet.<?php echo ' '; ?></td></tr>
+                            <tr><td colspan="8" style="text-align:center;padding:40px;">No reviews yet.</td></tr>
                         <?php endif; ?>
                     </tbody>
                 </table>
@@ -300,5 +429,6 @@ if(window.innerWidth > 768 && localStorage.getItem('sb') === '1'){
     sidebar.classList.add('collapsed');
 }
 </script>
+
 </body>
 </html>

@@ -1,5 +1,6 @@
 <?php
 require_once '../includes/db.php';
+require_once '../includes/notifications.php';
 session_start();
 
 if(!isset($_SESSION['user_id']) || $_SESSION['role'] !== 'admin'){
@@ -41,6 +42,11 @@ if(isset($_POST['add_property'])){
     $stmt = $pdo->prepare("INSERT INTO properties (title, description, type, price, location, status, is_featured, image, bedrooms, bathrooms, area) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
     
     if($stmt->execute([$title, $description, $type, $price, $location, $status, $is_featured, $image_name, $bedrooms, $bathrooms, $area])){
+        $property_id = $pdo->lastInsertId();
+        
+        // Send notification to admin about new property
+        notify_new_property($property_id, $title);
+        
         $success = "Property added successfully!";
     } else {
         $error = "Failed to add property.";
@@ -88,16 +94,20 @@ if(isset($_POST['edit_property'])){
 
 // Handle Delete Property
 if(isset($_GET['delete'])){
+    $id = (int)$_GET['delete'];
+    
+    // Get image name first
     $stmt = $pdo->prepare("SELECT image FROM properties WHERE id = ?");
-    $stmt->execute([$_GET['delete']]);
+    $stmt->execute([$id]);
     $image = $stmt->fetchColumn();
     
+    // Delete image file if not default
     if($image && $image != 'default-property.jpg' && file_exists($upload_dir . $image)){
         unlink($upload_dir . $image);
     }
     
     $stmt = $pdo->prepare("DELETE FROM properties WHERE id = ?");
-    if($stmt->execute([$_GET['delete']])){
+    if($stmt->execute([$id])){
         $success = "Property deleted successfully!";
     } else {
         $error = "Failed to delete property.";
@@ -106,9 +116,19 @@ if(isset($_GET['delete'])){
 
 // Handle Toggle Featured
 if(isset($_GET['toggle_featured'])){
-    $id = $_GET['toggle_featured'];
+    $id = (int)$_GET['toggle_featured'];
     $stmt = $pdo->prepare("UPDATE properties SET is_featured = NOT is_featured WHERE id = ?");
     $stmt->execute([$id]);
+    
+    // Get property title for notification
+    $prop = $pdo->prepare("SELECT title, is_featured FROM properties WHERE id = ?");
+    $prop->execute([$id]);
+    $property = $prop->fetch();
+    
+    if($property['is_featured']){
+        notify_featured_property($id, $property['title']);
+    }
+    
     $success = "Featured status updated!";
     header("Location: properties.php");
     exit;
@@ -125,147 +145,374 @@ if(isset($_GET['edit'])){
 // Get all properties
 $properties = $pdo->query("SELECT * FROM properties ORDER BY created_at DESC")->fetchAll();
 
-// Statistics
-$stats = [];
-$stats['total_properties'] = $pdo->query("SELECT COUNT(*) FROM properties")->fetchColumn();
-$stats['sale_properties'] = $pdo->query("SELECT COUNT(*) FROM properties WHERE type='sale'")->fetchColumn();
-$stats['rent_properties'] = $pdo->query("SELECT COUNT(*) FROM properties WHERE type='rent'")->fetchColumn();
-$stats['project_properties'] = $pdo->query("SELECT COUNT(*) FROM properties WHERE type='project'")->fetchColumn();
-$stats['available_props'] = $pdo->query("SELECT COUNT(*) FROM properties WHERE status='available'")->fetchColumn();
-$stats['featured_props'] = $pdo->query("SELECT COUNT(*) FROM properties WHERE is_featured=1")->fetchColumn();
+// Get statistics
+$total_properties = $pdo->query("SELECT COUNT(*) FROM properties")->fetchColumn();
+$available_properties = $pdo->query("SELECT COUNT(*) FROM properties WHERE status = 'available'")->fetchColumn();
+$featured_properties = $pdo->query("SELECT COUNT(*) FROM properties WHERE is_featured = 1")->fetchColumn();
 
 $current_page = basename($_SERVER['PHP_SELF']);
 ?>
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Properties Management — Trans-Phil House Hub</title>
-<link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
-<style>
-:root {
-    --navy:   #1a3a6b;
-    --navy2:  #0f2340;
-    --green:  #2db12b;
-    --green2: #218f1f;
-    --orange: #f07800;
-    --orange2:#c96400;
-    --white:  #ffffff;
-    --bg:     #f0eff5;
-    --card:   #ffffff;
-    --border: #e4e2ee;
-    --text:   #1e1c2e;
-    --muted:  #6b6880;
-    --radius: 14px;
-    --shadow: 0 2px 12px rgba(26,58,107,.07);
-}
-*{margin:0;padding:0;box-sizing:border-box;}
-body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);display:flex;min-height:100vh;}
-
-/* ── SIDEBAR ── */
-.sidebar{width:260px;background:var(--navy2);display:flex;flex-direction:column;position:fixed;height:100vh;z-index:200;transition:.3s;}
-.sidebar.collapsed{width:72px;}
-.sb-logo{padding:24px 20px 20px;border-bottom:1px solid rgba(255,255,255,.08);display:flex;align-items:center;gap:12px;min-height:76px;}
-.sb-logo-icon{width:40px;height:40px;flex-shrink:0;}
-.sb-logo-text{overflow:hidden;transition:.3s;}
-.sb-logo-text .t1{font-size:15px;font-weight:700;color:#fff;white-space:nowrap;}
-.sb-logo-text .t2{font-size:10px;color:var(--orange);letter-spacing:1.2px;text-transform:uppercase;white-space:nowrap;}
-.sidebar.collapsed .sb-logo-text{width:0;opacity:0;}
-
-.sb-section{padding:12px 0 4px;font-size:10px;letter-spacing:1.5px;text-transform:uppercase;color:rgba(255,255,255,.3);padding-left:20px;overflow:hidden;white-space:nowrap;transition:.2s;}
-.sidebar.collapsed .sb-section{opacity:0;}
-
-.nav-item{display:flex;align-items:center;gap:14px;padding:11px 20px;color:rgba(255,255,255,.6);text-decoration:none;transition:.2s;position:relative;border-left:3px solid transparent;font-size:14px;font-weight:500;}
-.nav-item i{font-size:17px;width:20px;text-align:center;flex-shrink:0;}
-.nav-item span{white-space:nowrap;overflow:hidden;transition:.2s;}
-.sidebar.collapsed .nav-item span{width:0;opacity:0;}
-.nav-item:hover{color:#fff;background:rgba(255,255,255,.06);}
-.nav-item.active{color:#fff;background:rgba(45,177,43,.15);border-left:3px solid var(--green);}
-.sidebar.collapsed .nav-item::after{content:attr(data-tip);position:absolute;left:76px;top:50%;transform:translateY(-50%);background:var(--navy);color:#fff;padding:6px 12px;border-radius:8px;font-size:12px;white-space:nowrap;opacity:0;pointer-events:none;transition:.15s;z-index:300;}
-.sidebar.collapsed .nav-item:hover::after{opacity:1;}
-
-.sb-toggle{position:absolute;top:22px;right:-14px;width:28px;height:28px;background:var(--orange);border-radius:50%;display:flex;align-items:center;justify-content:center;cursor:pointer;border:2px solid #fff;z-index:300;transition:.3s;}
-.sb-toggle i{color:#fff;font-size:12px;transition:.3s;}
-.sidebar.collapsed .sb-toggle i{transform:rotate(180deg);}
-.sb-footer{margin-top:auto;padding:16px 0;border-top:1px solid rgba(255,255,255,.08);}
-
-/* ── MAIN ── */
-.main{flex:1;margin-left:260px;transition:.3s;min-width:0;}
-.sidebar.collapsed ~ .main{margin-left:72px;}
-
-.topbar{background:var(--card);padding:0 28px;height:64px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border);position:sticky;top:0;z-index:100;}
-.topbar-left h1{font-size:20px;color:var(--navy);font-weight:700;}
-.topbar-left p{font-size:12px;color:var(--muted);}
-.topbar-right{display:flex;align-items:center;gap:16px;}
-.user-chip{display:flex;align-items:center;gap:10px;background:var(--bg);padding:6px 14px 6px 6px;border-radius:30px;}
-.user-avatar{width:32px;height:32px;border-radius:50%;background:var(--navy);display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:13px;}
-.user-chip span{font-size:13px;font-weight:600;color:var(--navy);}
-
-.content{padding:28px;}
-
-/* Stats Row */
-.stats-row{display:grid;grid-template-columns:repeat(4,1fr);gap:18px;margin-bottom:28px;}
-.stat-card{background:var(--card);border-radius:var(--radius);padding:20px;display:flex;align-items:center;gap:16px;box-shadow:var(--shadow);border:1px solid var(--border);}
-.stat-icon{width:48px;height:48px;border-radius:12px;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
-.stat-icon i{font-size:22px;}
-.stat-num{font-size:26px;font-weight:700;color:var(--navy);line-height:1;}
-.stat-label{font-size:12px;color:var(--muted);margin-top:3px;}
-
-/* Form Card */
-.form-card{background:var(--card);border-radius:var(--radius);padding:24px;margin-bottom:28px;border:1px solid var(--border);}
-.form-card h2{font-size:16px;font-weight:700;color:var(--navy);margin-bottom:20px;}
-.form-card h2 i{margin-right:8px;color:var(--orange);}
-.form-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:20px;margin-bottom:20px;}
-.form-group label{display:block;font-size:12px;font-weight:600;color:var(--text);margin-bottom:6px;}
-.form-group input,.form-group select,.form-group textarea{width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:10px;font-family:inherit;font-size:13px;transition:.2s;}
-.form-group input:focus,.form-group select:focus,.form-group textarea:focus{outline:none;border-color:var(--orange);box-shadow:0 0 0 3px rgba(240,120,0,.1);}
-.btn-primary{background:var(--orange);color:#fff;padding:12px 24px;border:none;border-radius:10px;cursor:pointer;font-weight:600;font-size:13px;transition:.2s;}
-.btn-primary:hover{background:var(--orange2);transform:translateY(-1px);}
-.btn-secondary{background:var(--bg);color:var(--text);padding:10px 20px;border:none;border-radius:10px;cursor:pointer;font-weight:500;font-size:13px;margin-left:10px;}
-
-/* Table Card */
-.table-card{background:var(--card);border-radius:var(--radius);padding:24px;border:1px solid var(--border);overflow-x:auto;}
-.table-card h2{font-size:16px;font-weight:700;color:var(--navy);margin-bottom:20px;}
-.table-card h2 i{margin-right:8px;color:var(--orange);}
-
-.tbl{width:100%;border-collapse:collapse;}
-.tbl th{padding:12px 12px;font-size:11px;text-transform:uppercase;letter-spacing:.8px;color:var(--muted);background:#f8f7fc;border-bottom:1px solid var(--border);text-align:left;}
-.tbl td{padding:12px;font-size:13px;border-bottom:1px solid var(--border);vertical-align:middle;}
-.tbl tr:last-child td{border-bottom:none;}
-.tbl tr:hover td{background:#fafaf8;}
-
-.property-img{width:65px;height:50px;object-fit:cover;border-radius:8px;background:#f3f4f6;}
-.badge{padding:4px 10px;border-radius:20px;font-size:11px;font-weight:600;display:inline-block;}
-.b-sale{background:#e0e8f7;color:var(--navy);}
-.b-rent{background:#fff0df;color:var(--orange2);}
-.b-project{background:#e6f7e6;color:var(--green2);}
-.b-available{background:#e6f7e6;color:var(--green2);}
-.b-sold{background:#fef0f0;color:#c0392b;}
-.b-rented{background:#fef0f0;color:#c0392b;}
-.b-featured{background:#fef9e0;color:#a07000;}
-.action-btn{padding:6px 10px;border-radius:8px;text-decoration:none;font-size:12px;display:inline-block;margin:0 3px;}
-.action-btn i{font-size:11px;}
-.btn-edit{background:#e0e8f7;color:var(--navy);}
-.btn-delete{background:#fef0f0;color:#c0392b;}
-.btn-feature{background:#fef9e0;color:#a07000;}
-.alert{padding:14px 18px;border-radius:12px;margin-bottom:20px;}
-.alert-success{background:#e6f7e6;color:var(--green2);border-left:4px solid var(--green);}
-.alert-error{background:#fef0f0;color:#c0392b;border-left:4px solid #c0392b;}
-.mob-toggle{display:none;position:fixed;bottom:20px;right:20px;width:48px;height:48px;background:var(--navy);border-radius:50%;align-items:center;justify-content:center;z-index:400;cursor:pointer;border:none;color:#fff;font-size:18px;box-shadow:0 4px 16px rgba(0,0,0,.2);}
-
-@media(max-width:1100px){.stats-row{grid-template-columns:repeat(2,1fr);}}
-@media(max-width:768px){
-    .sidebar{transform:translateX(-100%);width:260px;}
-    .sidebar.show{transform:translateX(0);}
-    .main{margin-left:0!important;}
-    .mob-toggle{display:flex;}
-    .stats-row{grid-template-columns:1fr;}
-    .content{padding:16px;}
-    .topbar{padding:0 16px;}
-}
-</style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Manage Properties - Admin | Trans-Phil</title>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <style>
+        :root {
+            --navy: #1a3a6b;
+            --navy2: #0f2340;
+            --green: #2db12b;
+            --green2: #218f1f;
+            --orange: #f07800;
+            --orange2: #c96400;
+            --white: #ffffff;
+            --bg: #f0eff5;
+            --card: #ffffff;
+            --border: #e4e2ee;
+            --text: #1e1c2e;
+            --muted: #6b6880;
+            --radius: 14px;
+            --shadow: 0 2px 12px rgba(26,58,107,.07);
+        }
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'DM Sans', sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            display: flex;
+            min-height: 100vh;
+        }
+        
+        /* Sidebar */
+        .sidebar {
+            width: 260px;
+            background: var(--navy2);
+            display: flex;
+            flex-direction: column;
+            position: fixed;
+            height: 100vh;
+            z-index: 200;
+            transition: .3s;
+        }
+        
+        .sidebar.collapsed { width: 72px; }
+        
+        .sb-logo {
+            padding: 24px 20px 20px;
+            border-bottom: 1px solid rgba(255,255,255,.08);
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            min-height: 76px;
+        }
+        
+        .sb-logo-icon { width: 40px; height: 40px; flex-shrink: 0; }
+        
+        .sb-logo-text { overflow: hidden; transition: .3s; }
+        .sb-logo-text .t1 { font-size: 15px; font-weight: 700; color: #fff; white-space: nowrap; }
+        .sb-logo-text .t2 { font-size: 10px; color: var(--orange); letter-spacing: 1.2px; text-transform: uppercase; white-space: nowrap; }
+        .sidebar.collapsed .sb-logo-text { width: 0; opacity: 0; }
+        
+        .sb-section {
+            padding: 12px 0 4px;
+            font-size: 10px;
+            letter-spacing: 1.5px;
+            text-transform: uppercase;
+            color: rgba(255,255,255,.3);
+            padding-left: 20px;
+            overflow: hidden;
+            white-space: nowrap;
+            transition: .2s;
+        }
+        .sidebar.collapsed .sb-section { opacity: 0; }
+        
+        .nav-item {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            padding: 11px 20px;
+            color: rgba(255,255,255,.6);
+            text-decoration: none;
+            transition: .2s;
+            position: relative;
+            border-left: 3px solid transparent;
+            font-size: 14px;
+            font-weight: 500;
+        }
+        .nav-item i { font-size: 17px; width: 20px; text-align: center; flex-shrink: 0; }
+        .nav-item span { white-space: nowrap; overflow: hidden; transition: .2s; }
+        .sidebar.collapsed .nav-item span { width: 0; opacity: 0; }
+        .nav-item:hover { color: #fff; background: rgba(255,255,255,.06); }
+        .nav-item.active { color: #fff; background: rgba(45,177,43,.15); border-left: 3px solid var(--green); }
+        .nav-badge {
+            background: var(--orange);
+            color: #fff;
+            font-size: 10px;
+            padding: 2px 7px;
+            border-radius: 20px;
+            margin-left: auto;
+            flex-shrink: 0;
+        }
+        .sidebar.collapsed .nav-badge { display: none; }
+        
+        .sidebar.collapsed .nav-item::after {
+            content: attr(data-tip);
+            position: absolute;
+            left: 76px;
+            top: 50%;
+            transform: translateY(-50%);
+            background: var(--navy);
+            color: #fff;
+            padding: 6px 12px;
+            border-radius: 8px;
+            font-size: 12px;
+            white-space: nowrap;
+            opacity: 0;
+            pointer-events: none;
+            transition: .15s;
+            z-index: 300;
+        }
+        .sidebar.collapsed .nav-item:hover::after { opacity: 1; }
+        
+        .sb-toggle {
+            position: absolute;
+            top: 22px;
+            right: -14px;
+            width: 28px;
+            height: 28px;
+            background: var(--orange);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            border: 2px solid #fff;
+            z-index: 300;
+            transition: .3s;
+        }
+        .sb-toggle i { color: #fff; font-size: 12px; transition: .3s; }
+        .sidebar.collapsed .sb-toggle i { transform: rotate(180deg); }
+        .sb-footer { margin-top: auto; padding: 16px 0; border-top: 1px solid rgba(255,255,255,.08); }
+        
+        /* Main Content */
+        .main {
+            flex: 1;
+            margin-left: 260px;
+            transition: .3s;
+            min-width: 0;
+        }
+        .sidebar.collapsed ~ .main { margin-left: 72px; }
+        
+        .topbar {
+            background: var(--card);
+            padding: 0 28px;
+            height: 64px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            border-bottom: 1px solid var(--border);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+        .topbar-left h1 { font-size: 20px; color: var(--navy); font-weight: 700; }
+        .topbar-left p { font-size: 12px; color: var(--muted); }
+        .user-chip {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            background: var(--bg);
+            padding: 6px 14px 6px 6px;
+            border-radius: 30px;
+        }
+        .user-avatar {
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            background: var(--navy);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #fff;
+            font-weight: 700;
+            font-size: 13px;
+        }
+        .user-chip span { font-size: 13px; font-weight: 600; color: var(--navy); }
+        
+        .content { padding: 28px; }
+        
+        /* Stats Cards */
+        .stats-row {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 18px;
+            margin-bottom: 28px;
+        }
+        .stat-card {
+            background: var(--card);
+            border-radius: var(--radius);
+            padding: 20px;
+            text-align: center;
+            box-shadow: var(--shadow);
+            border: 1px solid var(--border);
+        }
+        .stat-card h3 { font-size: 32px; color: var(--navy); }
+        .stat-card p { color: var(--muted); font-size: 13px; }
+        
+        /* Form Card */
+        .form-card {
+            background: var(--card);
+            border-radius: var(--radius);
+            padding: 24px;
+            margin-bottom: 30px;
+            border: 1px solid var(--border);
+        }
+        .form-card h2 {
+            font-size: 18px;
+            color: var(--navy);
+            margin-bottom: 20px;
+        }
+        .form-card h2 i { margin-right: 8px; color: var(--orange); }
+        .form-row {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+        .form-group label {
+            display: block;
+            font-size: 13px;
+            font-weight: 600;
+            margin-bottom: 8px;
+            color: #374151;
+        }
+        .form-group input, .form-group select, .form-group textarea {
+            width: 100%;
+            padding: 10px 12px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            font-family: inherit;
+        }
+        .form-group input:focus, .form-group select:focus { outline: none; border-color: var(--orange); }
+        .btn-primary {
+            background: var(--orange);
+            color: white;
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 600;
+        }
+        .btn-primary:hover { background: var(--orange2); }
+        
+        /* Table Card */
+        .table-card {
+            background: var(--card);
+            border-radius: var(--radius);
+            padding: 24px;
+            overflow-x: auto;
+            border: 1px solid var(--border);
+        }
+        .table-card h2 {
+            font-size: 18px;
+            color: var(--navy);
+            margin-bottom: 20px;
+        }
+        .table-card h2 i { margin-right: 8px; color: var(--orange); }
+        
+        table { width: 100%; border-collapse: collapse; }
+        th {
+            text-align: left;
+            padding: 12px;
+            background: #f9fafb;
+            font-size: 13px;
+            font-weight: 600;
+        }
+        td {
+            padding: 12px;
+            border-bottom: 1px solid var(--border);
+            font-size: 13px;
+            vertical-align: middle;
+        }
+        .property-img {
+            width: 65px;
+            height: 50px;
+            object-fit: cover;
+            border-radius: 8px;
+            background: #f3f4f6;
+        }
+        .badge {
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 11px;
+            font-weight: 600;
+            display: inline-block;
+        }
+        .badge-available { background: #d1fae5; color: #065f46; }
+        .badge-sold { background: #fee2e2; color: #991b1b; }
+        .badge-rented { background: #fee2e2; color: #991b1b; }
+        .badge-featured { background: #fef3c7; color: #92400e; }
+        .action-btn {
+            padding: 5px 10px;
+            border-radius: 6px;
+            text-decoration: none;
+            margin: 0 3px;
+            font-size: 12px;
+            display: inline-block;
+        }
+        .btn-edit { background: #e0f2fe; color: #0369a1; }
+        .btn-delete { background: #fee2e2; color: #dc2626; }
+        .alert {
+            padding: 12px 16px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        .alert-success { background: #d1fae5; color: #065f46; border-left: 4px solid #10b981; }
+        .alert-error { background: #fee2e2; color: #991b1b; border-left: 4px solid #dc2626; }
+        
+        .mob-toggle {
+            display: none;
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            width: 48px;
+            height: 48px;
+            background: var(--navy);
+            border-radius: 50%;
+            align-items: center;
+            justify-content: center;
+            z-index: 400;
+            cursor: pointer;
+            border: none;
+            color: #fff;
+            font-size: 18px;
+            box-shadow: 0 4px 16px rgba(0,0,0,.2);
+        }
+        
+        @media (max-width: 1100px) {
+            .stats-row { grid-template-columns: repeat(2, 1fr); }
+        }
+        
+        @media (max-width: 768px) {
+            .sidebar { transform: translateX(-100%); width: 260px; }
+            .sidebar.show { transform: translateX(0); }
+            .main { margin-left: 0 !important; }
+            .mob-toggle { display: flex; }
+            .stats-row { grid-template-columns: 1fr; }
+            .content { padding: 16px; }
+            .topbar { padding: 0 16px; }
+        }
+    </style>
 </head>
 <body>
 
@@ -286,14 +533,26 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);dis
         </div>
     </div>
     <div class="sb-section">Main Menu</div>
-    <a href="dashboard.php" class="nav-item" data-tip="Dashboard"><i class="fas fa-th-large"></i><span>Dashboard</span></a>
-    <a href="properties.php" class="nav-item active" data-tip="Properties"><i class="fas fa-building"></i><span>Properties</span></a>
-    <a href="leads.php" class="nav-item" data-tip="Leads"><i class="fas fa-funnel-dollar"></i><span>Lead Management</span></a>
+    <a href="dashboard.php" class="nav-item <?php echo $current_page == 'dashboard.php' ? 'active' : ''; ?>" data-tip="Dashboard">
+        <i class="fas fa-th-large"></i><span>Dashboard</span>
+    </a>
+    <a href="properties.php" class="nav-item <?php echo $current_page == 'properties.php' ? 'active' : ''; ?>" data-tip="Properties">
+        <i class="fas fa-building"></i><span>Properties</span>
+    </a>
+    <a href="leads.php" class="nav-item" data-tip="Leads">
+        <i class="fas fa-funnel-dollar"></i><span>Lead Management</span>
+    </a>
     <div class="sb-section">Management</div>
-    <a href="users.php" class="nav-item" data-tip="Users"><i class="fas fa-users"></i><span>User Management</span></a>
-    <a href="reports.php" class="nav-item" data-tip="Reports"><i class="fas fa-chart-bar"></i><span>Reports & Analytics</span></a>
+    <a href="users.php" class="nav-item" data-tip="Users">
+        <i class="fas fa-users"></i><span>User Management</span>
+    </a>
+    <a href="reviews.php" class="nav-item" data-tip="Reviews">
+        <i class="fas fa-star"></i><span>Reviews & Ratings</span>
+    </a>
     <div class="sb-footer">
-        <a href="../logout.php" class="nav-item" data-tip="Logout"><i class="fas fa-sign-out-alt"></i><span>Logout</span></a>
+        <a href="../logout.php" class="nav-item" data-tip="Logout">
+            <i class="fas fa-sign-out-alt"></i><span>Logout</span>
+        </a>
     </div>
 </aside>
 
@@ -303,50 +562,43 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);dis
 <div class="main">
     <div class="topbar">
         <div class="topbar-left">
-            <h1>Properties Management</h1>
+            <h1>Property Management</h1>
             <p><?php echo date('l, F j, Y'); ?></p>
         </div>
-        <div class="topbar-right">
-            <div class="user-chip">
-                <div class="user-avatar"><?php echo strtoupper(substr($_SESSION['full_name'],0,1)); ?></div>
-                <span><?php echo htmlspecialchars($_SESSION['full_name']); ?></span>
-            </div>
+        <div class="user-chip">
+            <div class="user-avatar"><?php echo strtoupper(substr($_SESSION['full_name'],0,1)); ?></div>
+            <span><?php echo htmlspecialchars($_SESSION['full_name']); ?></span>
         </div>
     </div>
 
     <div class="content">
-
-        <!-- STATS CARDS -->
+        
+        <!-- Stats Cards -->
         <div class="stats-row">
             <div class="stat-card">
-                <div class="stat-icon" style="background:#eef2f9;"><i class="fas fa-home" style="color:var(--navy);"></i></div>
-                <div><div class="stat-num"><?php echo $stats['total_properties']; ?></div><div class="stat-label">Total Properties</div></div>
+                <h3><?php echo $total_properties; ?></h3>
+                <p>Total Properties</p>
             </div>
             <div class="stat-card">
-                <div class="stat-icon" style="background:#fff0df;"><i class="fas fa-tag" style="color:var(--orange);"></i></div>
-                <div><div class="stat-num"><?php echo $stats['sale_properties']; ?></div><div class="stat-label">For Sale</div></div>
+                <h3><?php echo $available_properties; ?></h3>
+                <p>Available</p>
             </div>
             <div class="stat-card">
-                <div class="stat-icon" style="background:#e6f7e6;"><i class="fas fa-key" style="color:var(--green);"></i></div>
-                <div><div class="stat-num"><?php echo $stats['rent_properties']; ?></div><div class="stat-label">For Rent</div></div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-icon" style="background:#fef9e0;"><i class="fas fa-hard-hat" style="color:#a07000;"></i></div>
-                <div><div class="stat-num"><?php echo $stats['project_properties']; ?></div><div class="stat-label">Projects</div></div>
+                <h3><?php echo $featured_properties; ?></h3>
+                <p>Featured</p>
             </div>
         </div>
-
-        <!-- ALERTS -->
+        
         <?php if(isset($success)): ?>
-            <div class="alert alert-success"><i class="fas fa-check-circle"></i> <?php echo $success; ?></div>
+            <div class="alert alert-success">✓ <?php echo $success; ?></div>
         <?php endif; ?>
         <?php if(isset($error)): ?>
-            <div class="alert alert-error"><i class="fas fa-exclamation-circle"></i> <?php echo $error; ?></div>
+            <div class="alert alert-error">✗ <?php echo $error; ?></div>
         <?php endif; ?>
-
-        <!-- ADD/EDIT PROPERTY FORM -->
+        
+        <!-- Add/Edit Property Form -->
         <div class="form-card">
-            <h2><i class="fas fa-<?php echo $edit_property ? 'pen' : 'plus'; ?>"></i> <?php echo $edit_property ? 'Edit Property' : 'Add New Property'; ?></h2>
+            <h2><i class="fas fa-<?php echo $edit_property ? 'edit' : 'plus'; ?>"></i> <?php echo $edit_property ? 'Edit Property' : 'Add New Property'; ?></h2>
             <form method="POST" enctype="multipart/form-data">
                 <?php if($edit_property): ?>
                     <input type="hidden" name="property_id" value="<?php echo $edit_property['id']; ?>">
@@ -406,7 +658,7 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);dis
                     <div class="form-group">
                         <label>Featured Property</label>
                         <select name="is_featured">
-                            <option value="0">No</option>
+                            <option value="0" <?php echo ($edit_property['is_featured'] ?? 0) == 0 ? 'selected' : ''; ?>>No</option>
                             <option value="1" <?php echo ($edit_property['is_featured'] ?? 0) == 1 ? 'selected' : ''; ?>>Yes (Show on Homepage)</option>
                         </select>
                     </div>
@@ -416,7 +668,7 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);dis
                     <label>Property Image</label>
                     <input type="file" name="property_image" accept="image/*">
                     <?php if($edit_property && $edit_property['image'] && $edit_property['image'] != 'default-property.jpg'): ?>
-                        <p style="margin-top:6px; font-size:11px; color:var(--muted);">Current: <?php echo $edit_property['image']; ?></p>
+                        <p style="margin-top: 6px; font-size: 12px; color: var(--muted);">Current: <?php echo $edit_property['image']; ?></p>
                     <?php endif; ?>
                 </div>
                 
@@ -429,16 +681,16 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);dis
                     <i class="fas fa-save"></i> <?php echo $edit_property ? 'Update Property' : 'Add Property'; ?>
                 </button>
                 <?php if($edit_property): ?>
-                    <a href="properties.php" class="btn-secondary">Cancel Edit</a>
+                    <a href="properties.php" style="margin-left: 10px; color: #6b7280;">Cancel Edit</a>
                 <?php endif; ?>
             </form>
         </div>
-
-        <!-- PROPERTIES LIST TABLE -->
+        
+        <!-- Properties List Table -->
         <div class="table-card">
             <h2><i class="fas fa-list"></i> All Properties</h2>
             <?php if(count($properties) > 0): ?>
-                <table class="tbl">
+                <table>
                     <thead>
                         <tr>
                             <th>Image</th>
@@ -453,57 +705,80 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);dis
                     </thead>
                     <tbody>
                         <?php foreach($properties as $prop): ?>
-                            <?php 
-                            $image_path = '../assets/uploads/' . ($prop['image'] ?? 'default-property.jpg');
-                            if(!file_exists($image_path) || ($prop['image'] ?? '') == 'default-property.jpg'){
-                                $image_path = '../assets/images/' . ($prop['image'] ?? 'property1.png');
-                            }
-                            if(!file_exists($image_path)){
-                                $image_path = '../assets/images/property1.png';
-                            }
-                            ?>
                             <tr>
-                                <td><img src="<?php echo $image_path; ?>" class="property-img" onerror="this.src='../assets/images/property1.png'"></td>
                                 <td>
-                                    <div style="font-weight:600;"><?php echo htmlspecialchars($prop['title']); ?></div>
-                                    <div style="font-size:11px; color:var(--muted); margin-top:2px;"><i class="fas fa-map-pin"></i> <?php echo htmlspecialchars($prop['location']); ?></div>
+                                    <?php 
+                                    $image_path = '../assets/uploads/' . ($prop['image'] ?? 'default-property.jpg');
+                                    if(!file_exists($image_path) || ($prop['image'] ?? '') == 'default-property.jpg'){
+                                        $image_path = '../assets/images/' . ($prop['image'] ?? 'property1.png');
+                                    }
+                                    if(!file_exists($image_path)){
+                                        $image_path = '../assets/images/property1.png';
+                                    }
+                                    ?>
+                                    <img src="<?php echo $image_path; ?>" class="property-img" onerror="this.src='../assets/images/property1.png'">
                                 </td>
-                                <td><span class="badge b-<?php echo $prop['type']; ?>"><?php echo ucfirst($prop['type']); ?></span></td>
-                                <td><span style="font-weight:700; color:var(--navy);">₱ <?php echo number_format($prop['price'], 0); ?></span></td>
                                 <td>
-                                    <?php if($prop['bedrooms']): ?><span style="font-size:11px;"><i class="fas fa-bed"></i> <?php echo $prop['bedrooms']; ?></span><?php endif; ?>
-                                    <?php if($prop['bathrooms']): ?><span style="font-size:11px; margin-left:6px;"><i class="fas fa-bath"></i> <?php echo $prop['bathrooms']; ?></span><?php endif; ?>
-                                    <?php if($prop['area']): ?><span style="font-size:11px; margin-left:6px;"><i class="fas fa-expand"></i> <?php echo $prop['area']; ?>m²</span><?php endif; ?>
+                                    <div style="font-weight: 600;"><?php echo htmlspecialchars($prop['title']); ?></div>
+                                    <div style="font-size: 11px; color: var(--muted); margin-top: 2px;">
+                                        <i class="fas fa-map-pin"></i> <?php echo htmlspecialchars($prop['location']); ?>
+                                    </div>
                                 </td>
-                                <td><span class="badge b-<?php echo $prop['status']; ?>"><?php echo ucfirst($prop['status']); ?></span></td>
+                                <td>
+                                    <span class="badge" style="background: <?php echo $prop['type'] == 'sale' ? '#e0e8f7' : ($prop['type'] == 'rent' ? '#fff0df' : '#e6f7e6'); ?>; color: <?php echo $prop['type'] == 'sale' ? '#1a3a6b' : ($prop['type'] == 'rent' ? '#f07800' : '#2db12b'); ?>;">
+                                        <?php echo ucfirst($prop['type']); ?>
+                                    </span>
+                                </div>
+                                <td>
+                                    <span style="font-weight: 700; color: var(--navy);">₱ <?php echo number_format($prop['price'], 0); ?></span>
+                                </div>
+                                <td>
+                                    <?php if($prop['bedrooms']): ?>
+                                        <span style="font-size: 11px;"><i class="fas fa-bed"></i> <?php echo $prop['bedrooms']; ?></span>
+                                    <?php endif; ?>
+                                    <?php if($prop['bathrooms']): ?>
+                                        <span style="font-size: 11px; margin-left: 6px;"><i class="fas fa-bath"></i> <?php echo $prop['bathrooms']; ?></span>
+                                    <?php endif; ?>
+                                    <?php if($prop['area']): ?>
+                                        <span style="font-size: 11px; margin-left: 6px;"><i class="fas fa-expand"></i> <?php echo $prop['area']; ?>m²</span>
+                                    <?php endif; ?>
+                                    <?php if(!$prop['bedrooms'] && !$prop['bathrooms'] && !$prop['area']): ?>
+                                        <span style="font-size: 11px; color: var(--muted);">—</span>
+                                    <?php endif; ?>
+                                </div>
+                                <td>
+                                    <span class="badge badge-<?php echo $prop['status']; ?>">
+                                        <?php echo ucfirst($prop['status']); ?>
+                                    </span>
+                                </div>
                                 <td>
                                     <?php if($prop['is_featured']): ?>
-                                        <span class="badge b-featured"><i class="fas fa-star"></i> Featured</span>
+                                        <span class="badge badge-featured"><i class="fas fa-star"></i> Featured</span>
                                     <?php else: ?>
-                                        <span style="color:var(--muted); font-size:11px;">—</span>
+                                        <span style="color: var(--muted); font-size: 11px;">—</span>
                                     <?php endif; ?>
-                                </td>
+                                </div>
                                 <td>
                                     <a href="?edit=<?php echo $prop['id']; ?>" class="action-btn btn-edit"><i class="fas fa-edit"></i> Edit</a>
                                     <?php if($prop['is_featured']): ?>
-                                        <a href="?toggle_featured=<?php echo $prop['id']; ?>" class="action-btn" style="background:#fef9e0;color:#a07000;"><i class="fas fa-star"></i> Unfeature</a>
+                                        <a href="?toggle_featured=<?php echo $prop['id']; ?>" class="action-btn" style="background: #fef9e0; color: #a07000;"><i class="fas fa-star"></i> Unfeature</a>
                                     <?php else: ?>
-                                        <a href="?toggle_featured=<?php echo $prop['id']; ?>" class="action-btn" style="background:#e0e8f7;color:var(--navy);"><i class="far fa-star"></i> Feature</a>
+                                        <a href="?toggle_featured=<?php echo $prop['id']; ?>" class="action-btn" style="background: #e0e8f7; color: #1a3a6b;"><i class="far fa-star"></i> Feature</a>
                                     <?php endif; ?>
                                     <a href="?delete=<?php echo $prop['id']; ?>" class="action-btn btn-delete" onclick="return confirm('Delete this property?')"><i class="fas fa-trash-alt"></i> Delete</a>
-                                </td>
+                                </div>
                             </tr>
                         <?php endforeach; ?>
                     </tbody>
                 </table>
             <?php else: ?>
-                <div style="text-align:center; padding:48px; color:var(--muted);">
-                    <i class="fas fa-building" style="font-size:48px; margin-bottom:16px; opacity:0.5;"></i>
+                <div style="text-align: center; padding: 48px; color: var(--muted);">
+                    <i class="fas fa-building" style="font-size: 48px; margin-bottom: 16px; opacity: 0.5;"></i>
                     <p>No properties found. Click "Add New Property" to get started.</p>
                 </div>
             <?php endif; ?>
         </div>
-
+        
     </div>
 </div>
 
@@ -530,5 +805,6 @@ if(window.innerWidth > 768 && localStorage.getItem('sb') === '1'){
     sidebar.classList.add('collapsed');
 }
 </script>
+
 </body>
 </html>

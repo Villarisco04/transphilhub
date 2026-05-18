@@ -1,7 +1,7 @@
 <div class="footer">
     <div class="footer-brand">
         <div class="ft1">Trans-Phil <span>House Hub</span></div>
-        <p>A secure, centralized real estate management system for Trans-Phil House Corporation. Makati City, Metro Manila.</p>
+        <p>A secure, centralized real estate management system for Trans-Phil House Corporation.</p>
     </div>
 
     <div>
@@ -17,9 +17,9 @@
     <div>
         <h5>Contact</h5>
         <ul>
-            <li><i class="fas fa-map-marker-alt"></i> 1177 Bagtikan St, Makati</li>
-            <li><i class="fas fa-envelope"></i> info@transphilhouse.com</li>
-            <li><i class="fas fa-phone"></i> +63 (02) 8XXX-XXXX</li>
+            <li><i class="fas fa-map-marker-alt"></i>7th floor, Trans-phil House Building 1177 Bagtikan St, Makati</li>
+            <li><i class="fas fa-envelope"></i> pmhc@thc.com.ph</li>
+            <li><i class="fas fa-phone"></i> +63 9175311239</li>
         </ul>
     </div>
 </div>

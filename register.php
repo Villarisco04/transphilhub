@@ -1,6 +1,7 @@
 <?php
 require_once 'includes/csrf.php';
 require_once 'includes/db.php';
+require_once 'includes/notifications.php'; // Add this line at the top
 
 // Start session only if not already started
 if (session_status() === PHP_SESSION_NONE) {
@@ -11,6 +12,7 @@ date_default_timezone_set('Asia/Manila');
 
 $error = '';
 $success = '';
+$user_id = null; // Initialize variable
 
 // Generate CSRF token for the form
 $csrf_token = CSRFToken::generate();
@@ -95,10 +97,25 @@ if(isset($_POST['register'])){
             $stmt = $pdo->prepare("INSERT INTO users (full_name, email, password, role, phone, address, status) VALUES (?, ?, ?, ?, ?, ?, 'active')");
             
             if($stmt->execute([$full_name, $email, $hashed_password, $role, $phone, $address])){
+                $user_id = $pdo->lastInsertId(); // Get the new user ID
                 $success = "Registration successful! You can now login to your account.";
                 
                 // Log registration
                 error_log("New user registered: $email as $role at " . date('Y-m-d H:i:s'));
+                
+                // ============================================
+                // ADD NOTIFICATION FOR ADMIN (NEW REGISTRATION)
+                // ============================================
+                // This function is now defined in notifications.php
+                notify_new_registration($user_id, $full_name);
+                
+                // ============================================
+                // SEND WELCOME EMAIL (OPTIONAL - requires email config)
+                // ============================================
+                // Uncomment below when email is configured
+                // require_once 'includes/email_notifications.php';
+                // send_welcome_email($email, $full_name, $role);
+                
             } else {
                 $errors[] = "Registration failed. Please try again.";
             }
@@ -133,7 +150,6 @@ if(isset($_POST['register'])){
             padding: 40px 20px;
         }
 
-        /* Container */
         .register-container {
             max-width: 550px;
             margin: 0 auto;
@@ -143,7 +159,6 @@ if(isset($_POST['register'])){
             box-shadow: 0 20px 40px rgba(0, 0, 0, 0.08);
         }
 
-        /* Header */
         .register-header {
             background: linear-gradient(135deg, #1a3a6b 0%, #22508a 100%);
             padding: 40px 30px;
@@ -204,12 +219,10 @@ if(isset($_POST['register'])){
             z-index: 2;
         }
 
-        /* Form Body */
         .register-body {
             padding: 35px;
         }
 
-        /* Alert Messages */
         .alert-error {
             background: #fee2e2;
             border-left: 4px solid #dc2626;
@@ -236,7 +249,6 @@ if(isset($_POST['register'])){
             gap: 10px;
         }
 
-        /* Form Groups */
         .form-group {
             margin-bottom: 20px;
         }
@@ -293,7 +305,6 @@ if(isset($_POST['register'])){
             resize: vertical;
         }
 
-        /* Role Selector */
         .role-selector {
             display: flex;
             gap: 15px;
@@ -348,7 +359,6 @@ if(isset($_POST['register'])){
             margin-top: 4px;
         }
 
-        /* Password Strength Meter */
         .password-strength {
             margin-top: 8px;
         }
@@ -376,7 +386,6 @@ if(isset($_POST['register'])){
         .strength-medium .strength-bar { background: #f07800; width: 66%; }
         .strength-strong .strength-bar { background: #2db12b; width: 100%; }
 
-        /* Terms Checkbox */
         .terms-group {
             margin: 20px 0;
             display: flex;
@@ -407,7 +416,6 @@ if(isset($_POST['register'])){
             text-decoration: underline;
         }
 
-        /* Register Button */
         .register-btn {
             width: 100%;
             background: #f07800;
@@ -431,7 +439,6 @@ if(isset($_POST['register'])){
             box-shadow: 0 8px 20px rgba(240, 120, 0, 0.3);
         }
 
-        /* Login Link */
         .login-link {
             text-align: center;
             margin-top: 25px;
@@ -451,25 +458,16 @@ if(isset($_POST['register'])){
             color: #2db12b;
         }
 
-        /* Password Hint */
         .password-hint {
             font-size: 11px;
             color: #9ca3af;
             margin-top: 5px;
         }
 
-        /* Responsive */
         @media (max-width: 600px) {
-            body {
-                padding: 20px;
-            }
-            .register-body {
-                padding: 25px;
-            }
-            .role-selector {
-                flex-direction: column;
-                gap: 10px;
-            }
+            body { padding: 20px; }
+            .register-body { padding: 25px; }
+            .role-selector { flex-direction: column; gap: 10px; }
         }
     </style>
 </head>
@@ -503,10 +501,8 @@ if(isset($_POST['register'])){
         <?php endif; ?>
 
         <form method="POST" action="">
-            <!-- CSRF Token Field -->
             <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($csrf_token); ?>">
             
-            <!-- Role Selection -->
             <div class="role-selector">
                 <label class="role-option">
                     <input type="radio" name="role" value="client" checked required>
@@ -603,35 +599,28 @@ if(isset($_POST['register'])){
     </div>
 </div>
 
-<!-- Terms Modal -->
 <div id="termsModal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); z-index: 1000; align-items: center; justify-content: center;">
     <div style="background: white; max-width: 500px; width: 90%; max-height: 80vh; overflow-y: auto; border-radius: 16px; padding: 30px;">
         <h2 style="color: #1a3a6b; margin-bottom: 20px;">Terms & Conditions</h2>
         <div style="font-size: 13px; line-height: 1.6; color: #374151;">
             <h3>1. Account Registration</h3>
-            <p>By creating an account, you agree to provide accurate and complete information. You are responsible for maintaining the confidentiality of your account credentials.</p>
-            
+            <p>By creating an account, you agree to provide accurate and complete information.</p>
             <h3>2. Property Listings</h3>
-            <p>All property listings are subject to verification. Trans-Phil House Corporation reserves the right to modify or remove listings as necessary.</p>
-            
+            <p>All property listings are subject to verification.</p>
             <h3>3. Inquiries and Viewings</h3>
-            <p>When you submit an inquiry, you agree to be contacted by our real estate agents. Property viewings are subject to availability and agent scheduling.</p>
-            
+            <p>When you submit an inquiry, you agree to be contacted by our real estate agents.</p>
             <h3>4. Data Privacy</h3>
-            <p>Your personal information is protected under the Data Privacy Act of 2012. We do not share your data with third parties without consent.</p>
-            
+            <p>Your personal information is protected under the Data Privacy Act of 2012.</p>
             <h3>5. Code of Conduct</h3>
-            <p>Users must not misuse the platform, submit false information, or engage in fraudulent activities. Violations may result in account suspension.</p>
-            
+            <p>Users must not misuse the platform or engage in fraudulent activities.</p>
             <h3>6. Limitation of Liability</h3>
-            <p>Trans-Phil House Corporation is not liable for any losses arising from property transactions conducted through the platform.</p>
+            <p>Trans-Phil House Corporation is not liable for any losses arising from property transactions.</p>
         </div>
         <button onclick="closeTermsModal()" style="margin-top: 20px; width: 100%; background: #1a3a6b; color: white; padding: 12px; border: none; border-radius: 8px; cursor: pointer;">I Understand & Accept</button>
     </div>
 </div>
 
 <script>
-    // Password strength checker
     const password = document.getElementById('password');
     const confirmPassword = document.getElementById('confirm_password');
     const strengthBar = document.querySelector('.strength-bar');
@@ -683,7 +672,6 @@ if(isset($_POST['register'])){
 
     confirmPassword.addEventListener('input', checkPasswordMatch);
 
-    // Terms Modal
     const termsModal = document.getElementById('termsModal');
     
     document.getElementById('termsLink').addEventListener('click', function(e) {

@@ -71,17 +71,45 @@ if(isset($_POST['reset_password'])){
     }
 }
 
-// ── HANDLE DELETE USER ──
+// Handle Delete User
 if(isset($_GET['delete'])){
     $user_id = (int)$_GET['delete'];
+    
+    // Prevent deleting own account
     if($user_id == $_SESSION['user_id']){
         $error = "You cannot delete your own account!";
     } else {
-        $stmt = $pdo->prepare("DELETE FROM users WHERE id=?");
-        if($stmt->execute([$user_id])){
-            $success = "User deleted successfully!";
+        // First, check if user has related records
+        $check = $pdo->prepare("
+            SELECT 
+                (SELECT COUNT(*) FROM leads WHERE client_id = ? OR agent_id = ?) as leads_count,
+                (SELECT COUNT(*) FROM reviews WHERE client_id = ? OR agent_id = ?) as reviews_count,
+                (SELECT COUNT(*) FROM favorites WHERE client_id = ?) as favorites_count,
+                (SELECT COUNT(*) FROM notifications WHERE user_id = ?) as notifications_count,
+                (SELECT COUNT(*) FROM appointments WHERE client_id = ? OR agent_id = ?) as appointments_count
+        ");
+        $check->execute([$user_id, $user_id, $user_id, $user_id, $user_id, $user_id, $user_id, $user_id]);
+        $counts = $check->fetch();
+        
+        $total_related = $counts['leads_count'] + $counts['reviews_count'] + $counts['favorites_count'] + 
+                         $counts['notifications_count'] + $counts['appointments_count'];
+        
+        if($total_related > 0){
+            // Option 1: Soft delete - just deactivate the user instead of deleting
+            $stmt = $pdo->prepare("UPDATE users SET status = 'inactive', email = CONCAT('deleted_', id, '_', email) WHERE id = ?");
+            if($stmt->execute([$user_id])){
+                $success = "User deactivated successfully. (User had existing records, so account was deactivated instead of deleted)";
+            } else {
+                $error = "Failed to deactivate user.";
+            }
         } else {
-            $error = "Failed to delete user";
+            // No related records, safe to delete
+            $stmt = $pdo->prepare("DELETE FROM users WHERE id = ?");
+            if($stmt->execute([$user_id])){
+                $success = "User deleted successfully!";
+            } else {
+                $error = "Failed to delete user.";
+            }
         }
     }
 }

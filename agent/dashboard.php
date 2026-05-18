@@ -1,11 +1,22 @@
 <?php
 require_once '../includes/db.php';
+require_once '../includes/notifications.php';
 session_start();
 
 // Check if user is logged in and is agent
 if(!isset($_SESSION['user_id']) || $_SESSION['role'] !== 'agent'){
     header("Location: ../login.php");
     exit;
+}
+
+// Display success/error messages from update_lead_stage.php
+if(isset($_SESSION['success'])){
+    $success = $_SESSION['success'];
+    unset($_SESSION['success']);
+}
+if(isset($_SESSION['error'])){
+    $error = $_SESSION['error'];
+    unset($_SESSION['error']);
 }
 
 $agent_id = $_SESSION['user_id'];
@@ -59,6 +70,9 @@ $agent_stmt = $pdo->prepare("SELECT * FROM users WHERE id = ?");
 $agent_stmt->execute([$agent_id]);
 $agent = $agent_stmt->fetch();
 
+// Get unread notifications count
+$notif_count = get_unread_count($agent_id);
+
 $current_page = basename($_SERVER['PHP_SELF']);
 ?>
 <!DOCTYPE html>
@@ -108,35 +122,44 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);dis
 .topbar{background:var(--card);padding:0 28px;height:64px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border);position:sticky;top:0;z-index:100;}
 .topbar-left h1{font-size:20px;color:var(--navy);font-weight:700;}
 .topbar-left p{font-size:12px;color:var(--muted);}
+.topbar-right{display:flex;align-items:center;gap:16px;}
+
+/* Notification Bell Styles */
+.notif-wrapper{position:relative;}
+.notif-btn{position:relative;width:38px;height:38px;border-radius:10px;background:var(--bg);display:flex;align-items:center;justify-content:center;cursor:pointer;border:none;color:var(--navy);transition:.2s;}
+.notif-btn:hover{background:var(--border);}
+.notif-dot{position:absolute;top:6px;right:6px;width:8px;height:8px;background:var(--orange);border-radius:50%;border:2px solid var(--card);}
+.notif-dropdown-panel{position:absolute;top:45px;right:0;width:380px;max-width:calc(100vw - 20px);background:white;border-radius:12px;box-shadow:0 4px 20px rgba(0,0,0,0.15);z-index:1000;display:none;border:1px solid #e4e2ee;}
+.notif-dropdown-panel.show{display:block;animation:fadeIn 0.2s ease;}
+@keyframes fadeIn{from{opacity:0;transform:translateY(-10px);}to{opacity:1;transform:translateY(0);}}
+.notif-header{display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-bottom:1px solid #e4e2ee;}
+.notif-header h4{font-size:14px;font-weight:700;color:#1a3a6b;}
+.notif-mark-all{background:none;border:none;font-size:11px;color:#f07800;cursor:pointer;}
+.notif-list{max-height:400px;overflow-y:auto;}
+.notif-item{display:flex;align-items:flex-start;gap:12px;padding:12px 16px;border-bottom:1px solid #f0ede8;cursor:pointer;transition:background 0.2s;text-decoration:none;color:inherit;}
+.notif-item:hover{background:#faf9f6;}
+.notif-item.unread{background:#eef2f9;}
+.notif-item.unread:hover{background:#e5eaf2;}
+.notif-icon-small{width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0;}
+.notif-content{flex:1;}
+.notif-message{font-size:13px;color:#1e1c2e;margin-bottom:4px;line-height:1.4;}
+.notif-time{font-size:10px;color:#6b7280;}
+.notif-empty{text-align:center;padding:30px;color:#6b7280;font-size:13px;}
+.notif-empty i{font-size:30px;margin-bottom:10px;opacity:0.5;}
+
 .user-chip{display:flex;align-items:center;gap:10px;background:var(--bg);padding:6px 14px 6px 6px;border-radius:30px;}
 .user-avatar{width:32px;height:32px;border-radius:50%;background:var(--navy);display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:13px;}
 .user-chip span{font-size:13px;font-weight:600;color:var(--navy);}
 .content{padding:28px;}
 
 /* Alert Messages */
-.alert-success{
-    background:#e6f7e6;
-    border-left:4px solid #2db12b;
-    padding:12px 16px;
-    border-radius:8px;
-    margin-bottom:20px;
-    color:#166534;
-}
-.alert-error{
-    background:#fee2e2;
-    border-left:4px solid #dc2626;
-    padding:12px 16px;
-    border-radius:8px;
-    margin-bottom:20px;
-    color:#991b1b;
-}
+.alert-success{background:#e6f7e6;border-left:4px solid #2db12b;padding:12px 16px;border-radius:8px;margin-bottom:20px;color:#166534;}
+.alert-error{background:#fee2e2;border-left:4px solid #dc2626;padding:12px 16px;border-radius:8px;margin-bottom:20px;color:#991b1b;}
 
-/* Welcome Banner */
 .welcome-banner{background:linear-gradient(135deg, var(--navy2), var(--navy));border-radius:var(--radius);padding:28px 32px;margin-bottom:24px;}
 .welcome-banner h2{font-size:22px;color:#fff;margin-bottom:6px;}
 .welcome-banner p{color:rgba(255,255,255,.7);font-size:13px;}
 
-/* Stats Row */
 .stats-row{display:grid;grid-template-columns:repeat(5,1fr);gap:18px;margin-bottom:24px;}
 .stat-card{background:var(--card);border-radius:var(--radius);padding:20px;text-align:center;box-shadow:var(--shadow);border:1px solid var(--border);transition:.2s;}
 .stat-card:hover{transform:translateY(-3px);}
@@ -148,14 +171,12 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);dis
 .stat-negotiation .stat-num{color:#a07000;}
 .stat-closed .stat-num{color:#218f1f;}
 
-/* Grid Layout */
 .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:24px;}
 .card{background:var(--card);border-radius:var(--radius);padding:22px 24px;box-shadow:var(--shadow);border:1px solid var(--border);}
 .card-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:18px;}
 .card-head h2{font-size:15px;font-weight:700;color:var(--navy);}
 .card-head h2 i{margin-right:8px;color:var(--orange);}
 
-/* Conversion Ring */
 .conversion-ring{display:flex;align-items:center;gap:20px;flex-wrap:wrap;}
 .ring-chart{position:relative;width:120px;height:120px;}
 .ring-bg{position:absolute;width:100%;height:100%;border-radius:50%;background:var(--bg);}
@@ -168,13 +189,11 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);dis
 .conversion-stats .stat-label{color:var(--muted);font-size:12px;}
 .conversion-stats .stat-value{font-weight:700;}
 
-/* Profile Info */
 .profile-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:16px;}
 .profile-field{display:flex;flex-direction:column;gap:4px;}
 .profile-field label{font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;}
 .profile-field .value{font-size:14px;font-weight:500;color:var(--text);}
 
-/* Table */
 .tbl-wrap{overflow-x:auto;}
 .tbl{width:100%;border-collapse:collapse;min-width:800px;}
 .tbl th{padding:10px 12px;font-size:11px;text-transform:uppercase;letter-spacing:.8px;color:var(--muted);background:#f8f7fc;border-bottom:1px solid var(--border);text-align:left;}
@@ -196,7 +215,6 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);dis
 .price{font-weight:700;color:var(--navy);}
 .no-data{text-align:center;padding:40px;color:var(--muted);}
 
-/* Modal */
 .modal-bg{display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:500;align-items:center;justify-content:center;}
 .modal-bg.open{display:flex;}
 .modal-box{background:#fff;border-radius:16px;padding:28px;width:90%;max-width:480px;}
@@ -205,7 +223,6 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);dis
 .modal-box select,.modal-box textarea{width:100%;padding:10px;border:1px solid var(--border);border-radius:8px;margin-bottom:15px;font-family:inherit;}
 .modal-box .btn-primary{width:100%;background:var(--orange);color:white;border:none;padding:12px;border-radius:8px;cursor:pointer;font-weight:600;}
 
-/* Mobile */
 .mob-toggle{display:none;position:fixed;bottom:20px;right:20px;width:48px;height:48px;background:var(--navy);border-radius:50%;align-items:center;justify-content:center;z-index:400;cursor:pointer;border:none;color:#fff;font-size:18px;box-shadow:0 4px 16px rgba(0,0,0,.2);}
 
 @media(max-width:1100px){.stats-row{grid-template-columns:repeat(3,1fr);}.grid-2{grid-template-columns:1fr;}}
@@ -254,30 +271,52 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);dis
             <h1>Agent Dashboard</h1>
             <p><?php echo date('l, F j, Y'); ?></p>
         </div>
-        <div class="user-chip">
-            <div class="user-avatar"><?php echo strtoupper(substr($_SESSION['full_name'],0,1)); ?></div>
-            <span><?php echo htmlspecialchars($_SESSION['full_name']); ?></span>
+        <div class="topbar-right">
+            <!-- Notification Bell -->
+            <div class="notif-wrapper">
+                <button class="notif-btn" id="notifBellBtn" title="Notifications">
+                    <i class="fas fa-bell"></i>
+                    <?php if($notif_count > 0): ?>
+                        <span class="notif-dot" id="notifDot"></span>
+                    <?php else: ?>
+                        <span class="notif-dot" id="notifDot" style="display: none;"></span>
+                    <?php endif; ?>
+                </button>
+                <div class="notif-dropdown-panel" id="notifDropdownPanel">
+                    <div class="notif-header">
+                        <h4>Notifications</h4>
+                        <button id="markAllReadBtn" class="notif-mark-all">Mark all as read</button>
+                    </div>
+                    <div class="notif-list" id="notifList">
+                        <div class="notif-loading">Loading...</div>
+                    </div>
+                </div>
+            </div>
+            <div class="user-chip">
+                <div class="user-avatar"><?php echo strtoupper(substr($_SESSION['full_name'],0,1)); ?></div>
+                <span><?php echo htmlspecialchars($_SESSION['full_name']); ?></span>
+            </div>
         </div>
     </div>
 
     <div class="content">
 
         <!-- Display success/error messages -->
-        <?php if(isset($_SESSION['success'])): ?>
+        <?php if(isset($success)): ?>
             <div class="alert-success">
-                <i class="fas fa-check-circle"></i> <?php echo $_SESSION['success']; unset($_SESSION['success']); ?>
+                <i class="fas fa-check-circle"></i> <?php echo $success; ?>
             </div>
         <?php endif; ?>
 
-        <?php if(isset($_SESSION['error'])): ?>
+        <?php if(isset($error)): ?>
             <div class="alert-error">
-                <i class="fas fa-exclamation-circle"></i> <?php echo $_SESSION['error']; unset($_SESSION['error']); ?>
+                <i class="fas fa-exclamation-circle"></i> <?php echo $error; ?>
             </div>
         <?php endif; ?>
 
         <!-- Welcome Banner -->
         <div class="welcome-banner">
-            <h2>Welcome back, <?php echo explode(' ', $_SESSION['full_name'])[0]; ?>! </h2>
+            <h2>Welcome back, <?php echo explode(' ', $_SESSION['full_name'])[0]; ?>! 🏠</h2>
             <p>Manage your leads, track client inquiries, and schedule property viewings.</p>
         </div>
 
@@ -448,27 +487,131 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);dis
 </div>
 
 <script>
+// Notification Dropdown JavaScript
+const notifBell = document.getElementById('notifBellBtn');
+const notifDropdown = document.getElementById('notifDropdownPanel');
+const notifList = document.getElementById('notifList');
+const notifDot = document.getElementById('notifDot');
+const markAllBtn = document.getElementById('markAllReadBtn');
+let baseUrl = '<?php echo (isset($_SERVER['HTTPS']) ? 'https://' : 'http://') . $_SERVER['HTTP_HOST'] . '/transphilhub'; ?>';
+
+function getTimeAgo(dateString) {
+    const date = new Date(dateString);
+    const now = new Date();
+    const seconds = Math.floor((now - date) / 1000);
+    if (seconds < 60) return 'just now';
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes} min ago`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `${hours} hour${hours > 1 ? 's' : ''} ago`;
+    const days = Math.floor(hours / 24);
+    if (days < 7) return `${days} day${days > 1 ? 's' : ''} ago`;
+    return date.toLocaleDateString();
+}
+
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+function loadNotifications() {
+    if (!notifList) return;
+    notifList.innerHTML = '<div class="notif-loading">Loading...</div>';
+    fetch(baseUrl + '/ajax/get_notifications.php?action=list')
+        .then(response => response.json())
+        .then(data => {
+            if (data.success && data.notifications && data.notifications.length > 0) {
+                let html = '';
+                data.notifications.forEach(notif => {
+                    const isUnread = notif.is_read == 0 ? 'unread' : '';
+                    const timeAgo = getTimeAgo(notif.created_at);
+                    let iconClass = 'fa-bell';
+                    if (notif.message.includes('inquiry')) iconClass = 'fa-envelope';
+                    else if (notif.message.includes('lead')) iconClass = 'fa-user-tie';
+                    else if (notif.message.includes('appointment')) iconClass = 'fa-calendar-check';
+                    else if (notif.message.includes('review')) iconClass = 'fa-star';
+                    html += `
+                        <div class="notif-item ${isUnread}" data-id="${notif.id}" data-link="${notif.link || '#'}">
+                            <div class="notif-content">
+                                <div class="notif-message">${escapeHtml(notif.message)}</div>
+                                <div class="notif-time">${timeAgo}</div>
+                            </div>
+                        </div>
+                    `;
+                });
+                notifList.innerHTML = html;
+                document.querySelectorAll('.notif-item').forEach(item => {
+                    item.addEventListener('click', function() {
+                        const notifId = this.dataset.id;
+                        const link = this.dataset.link;
+                        if (notifId) {
+                            fetch(baseUrl + `/ajax/get_notifications.php?action=mark_read&id=${notifId}`)
+                                .then(() => {
+                                    if (link && link !== '#') window.location.href = link;
+                                    else { loadNotifications(); updateNotifCount(); }
+                                });
+                        }
+                    });
+                });
+            } else {
+                notifList.innerHTML = `<div class="notif-empty"><i class="fas fa-bell-slash"></i><p>No notifications</p></div>`;
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            notifList.innerHTML = `<div class="notif-empty"><i class="fas fa-exclamation-circle"></i><p>Error loading notifications</p></div>`;
+        });
+}
+
+function updateNotifCount() {
+    fetch(baseUrl + '/ajax/get_notifications.php?action=count')
+        .then(response => response.json())
+        .then(data => {
+            if (data.success && data.count > 0) notifDot ? notifDot.style.display = 'block' : null;
+            else notifDot ? notifDot.style.display = 'none' : null;
+        })
+        .catch(error => console.error('Error:', error));
+}
+
+function markAllAsRead() {
+    fetch(baseUrl + '/ajax/get_notifications.php?action=mark_all_read')
+        .then(() => { loadNotifications(); if (notifDot) notifDot.style.display = 'none'; })
+        .catch(error => console.error('Error:', error));
+}
+
+if (notifBell) {
+    notifBell.addEventListener('click', (e) => {
+        e.stopPropagation();
+        notifDropdown.classList.toggle('show');
+        if (notifDropdown.classList.contains('show')) loadNotifications();
+    });
+}
+if (markAllBtn) markAllBtn.addEventListener('click', (e) => { e.stopPropagation(); markAllAsRead(); });
+document.addEventListener('click', (e) => {
+    if (notifDropdown && notifBell && !notifBell.contains(e.target) && !notifDropdown.contains(e.target))
+        notifDropdown.classList.remove('show');
+});
+updateNotifCount();
+setInterval(updateNotifCount, 30000);
+
+// Sidebar toggle
 const sidebar = document.getElementById('sidebar');
 const sbToggle = document.getElementById('sbToggle');
 const mobToggle = document.getElementById('mobToggle');
-
-sbToggle.addEventListener('click', e => {
-    e.stopPropagation();
-    sidebar.classList.toggle('collapsed');
-    localStorage.setItem('sb', sidebar.classList.contains('collapsed') ? '1' : '0');
-});
-
-mobToggle.addEventListener('click', () => sidebar.classList.toggle('show'));
-
-document.addEventListener('click', e => {
-    if(window.innerWidth <= 768 && !sidebar.contains(e.target) && !mobToggle.contains(e.target)){
-        sidebar.classList.remove('show');
-    }
-});
-
-if(window.innerWidth > 768 && localStorage.getItem('sb') === '1'){
-    sidebar.classList.add('collapsed');
+if(sbToggle){
+    sbToggle.addEventListener('click', e => {
+        e.stopPropagation();
+        sidebar.classList.toggle('collapsed');
+        localStorage.setItem('sb', sidebar.classList.contains('collapsed') ? '1' : '0');
+    });
 }
+if(mobToggle) mobToggle.addEventListener('click', () => sidebar.classList.toggle('show'));
+document.addEventListener('click', e => {
+    if(window.innerWidth <= 768 && !sidebar.contains(e.target) && !mobToggle.contains(e.target))
+        sidebar.classList.remove('show');
+});
+if(window.innerWidth > 768 && localStorage.getItem('sb') === '1') sidebar.classList.add('collapsed');
 
 function openContactModal(leadId, clientName, clientEmail, clientPhone) {
     document.getElementById('contactName').innerHTML = '<i class="fas fa-user"></i> ' + clientName;
@@ -477,17 +620,12 @@ function openContactModal(leadId, clientName, clientEmail, clientPhone) {
     document.getElementById('contactLink').href = 'mailto:' + clientEmail + '?subject=Property Inquiry Follow-up';
     document.getElementById('contactModal').classList.add('open');
 }
-
 function openStageModal(leadId, currentStage) {
     document.getElementById('stageLeadId').value = leadId;
     document.getElementById('stageSelect').value = currentStage;
     document.getElementById('stageModal').classList.add('open');
 }
-
-function closeModal(modalId) {
-    document.getElementById(modalId).classList.remove('open');
-}
-
+function closeModal(modalId) { document.getElementById(modalId).classList.remove('open'); }
 document.querySelectorAll('.modal-bg').forEach(m => m.addEventListener('click', function(e){
     if(e.target === this) this.classList.remove('open');
 }));

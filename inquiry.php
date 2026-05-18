@@ -6,6 +6,8 @@ if (session_status() === PHP_SESSION_NONE) {
 
 require_once 'includes/csrf.php';
 require_once 'includes/db.php';
+require_once 'includes/notifications.php';
+require_once 'includes/email_notifications.php';
 
 // Redirect if not logged in
 if(!isset($_SESSION['user_id']) || $_SESSION['role'] !== 'client'){
@@ -34,6 +36,7 @@ if(!$property) {
 // Handle inquiry submission
 $error = '';
 $success = '';
+$lead_id = null;
 
 if(isset($_POST['submit_inquiry'])){
     // 🔒 CSRF PROTECTION - Verify token FIRST
@@ -60,7 +63,7 @@ if(isset($_POST['submit_inquiry'])){
         if(empty($message)) $errors[] = "Message is required";
         
         if(empty($errors)){
-            // Insert lead with all details
+            // Clean notes - remove special characters that might cause issues
             $notes = "=== INQUIRY DETAILS ===\n";
             $notes .= "Inquiry Type: " . ucfirst($inquiry_type) . "\n";
             $notes .= "Preferred Date: " . ($preferred_date ?: 'Not specified') . "\n";
@@ -73,10 +76,53 @@ if(isset($_POST['submit_inquiry'])){
             $notes .= "Email: $email\n";
             $notes .= "Phone: $phone";
             
+            // Remove any problematic characters (emojis, etc.)
+            $notes = preg_replace('/[^\x20-\x7E\x0A\x0D]/', '', $notes);
+            
             $stmt = $pdo->prepare("INSERT INTO leads (client_id, property_id, stage, notes) VALUES (?, ?, 'new', ?)");
             
             if($stmt->execute([$_SESSION['user_id'], $property_id, $notes])){
+                $lead_id = $pdo->lastInsertId();
                 $success = true;
+                
+                // ============================================
+                // SEND CONFIRMATION EMAIL TO CLIENT
+                // ============================================
+                send_inquiry_confirmation_email($email, $full_name, $property['title']);
+                
+                // ============================================
+                // TRIGGER NOTIFICATIONS
+                // ============================================
+                
+                // 1. Notify Admin (user_id = 1) about new inquiry
+                $admin_message = "New inquiry from {$full_name} for property: {$property['title']}";
+                add_notification(1, $admin_message, "admin/leads.php?view={$lead_id}");
+                
+                // 2. If property has an assigned agent, notify them
+                if(isset($property['agent_id']) && $property['agent_id'] > 0){
+                    $agent_message = "New lead assigned: {$full_name} is interested in {$property['title']}";
+                    add_notification($property['agent_id'], $agent_message, "agent/dashboard.php?lead={$lead_id}");
+                    
+                    // Get agent email and send notification
+                    $agent_stmt = $pdo->prepare("SELECT email, full_name FROM users WHERE id = ?");
+                    $agent_stmt->execute([$property['agent_id']]);
+                    $agent = $agent_stmt->fetch();
+                    if($agent){
+                        send_lead_assigned_email($agent['email'], $agent['full_name'], $full_name, $property['title']);
+                    }
+                }
+                
+                // 3. Notify all active agents
+                $agents = $pdo->query("SELECT id FROM users WHERE role = 'agent' AND status = 'active'");
+                foreach($agents as $agent){
+                    if($agent['id'] != ($property['agent_id'] ?? 0)){
+                        $agent_message = "New inquiry received for {$property['title']} from {$full_name}";
+                        add_notification($agent['id'], $agent_message, "agent/dashboard.php?lead={$lead_id}");
+                    }
+                }
+                
+                error_log("Inquiry #{$lead_id} submitted successfully");
+                
             } else {
                 $error = "Failed to submit inquiry. Please try again.";
             }
