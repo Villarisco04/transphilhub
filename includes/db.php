@@ -1,37 +1,38 @@
 <?php
-// includes/db.php - Works with Neon PostgreSQL
+// includes/db.php - Neon PostgreSQL Connection
 
-// Get database URL from environment
 $database_url = getenv('DATABASE_URL');
 
-// If running locally
-if (!$database_url) {
-    $host = 'localhost';
-    $dbname = 'transphilhub';
-    $user = 'root';
-    $password = '';
-    
+// For local testing (XAMPP)
+if (!$database_url && ($_SERVER['HTTP_HOST'] ?? '') === 'localhost') {
     try {
-        $pdo = new PDO("mysql:host=$host;dbname=$dbname", $user, $password);
+        $pdo = new PDO("mysql:host=localhost;dbname=transphilhub", "root", "");
         $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-        define('DB_DRIVER', 'mysql');
+        $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
     } catch(PDOException $e) {
         die("Local DB Error: " . $e->getMessage());
     }
-} else {
-    // Neon PostgreSQL connection
+} 
+// For Render with Neon
+elseif ($database_url) {
     try {
         // Convert postgresql:// to pgsql:// for PDO
-        $database_url = str_replace('postgresql://', 'pgsql://', $database_url);
+        $db_url = str_replace('postgresql://', 'pgsql://', $database_url);
         
-        $pdo = new PDO($database_url);
+        // Add SSL requirement for Neon
+        if (strpos($db_url, 'sslmode') === false) {
+            $db_url .= '?sslmode=require';
+        }
+        
+        $pdo = new PDO($db_url);
         $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
         $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
-        
-        define('DB_DRIVER', 'pgsql');
         
     } catch(PDOException $e) {
         die("Neon DB Error: " . $e->getMessage());
     }
+} 
+else {
+    die("DATABASE_URL not set. Please add it in Render environment variables.");
 }
 ?>
